@@ -683,12 +683,21 @@ function getDueWords(){
     return p.status !== "new" && p.due <= now;
   });
 }
-const WIP_LIMIT = 25;
+const WIP_LIMIT = 40;
 function getActiveCount(){
   return WORDS.filter(w=>{
     const st = STATE.progress[w.w].status;
     return st === "learning" || st === "review";
   }).length;
+}
+/* Words currently "in progress" (learning/review) regardless of their SRS due date —
+   used for on-demand extra reinforcement when nothing is due yet but the WIP slot
+   is full, so the person is never fully locked out of practising. */
+function getActiveWords(){
+  return WORDS.filter(w=>{
+    const st = STATE.progress[w.w].status;
+    return st === "learning" || st === "review";
+  });
 }
 function getNewWords(limit){
   const room = Math.max(0, WIP_LIMIT - getActiveCount());
@@ -910,6 +919,7 @@ function renderToday(){
   const newAvail = getNewWords(999).length;
   const s = stats();
   const activeCount = getActiveCount();
+  const activeWords = getActiveWords();
   const totalNewLeft = WORDS.filter(w=>STATE.progress[w.w].status==="new").length;
   const isCapped = activeCount >= WIP_LIMIT && totalNewLeft > 0;
   const started = getStartedWords();
@@ -917,9 +927,20 @@ function renderToday(){
   const wordOfDay = wodPool[dueEpoch() % wodPool.length];
   const mastered = WORDS.filter(w=>STATE.progress[w.w].status==="mastered");
 
+  const nothingDueOrNew = (due.length + newAvail) === 0;
+  const canExtraReview = nothingDueOrNew && activeWords.length > 0;
+
   let startLabel = '▶ Начать занятие';
-  if(due.length+newAvail===0){
-    startLabel = isCapped ? '🔒 Сначала закончи текущие 25' : 'Все слова повторены 🎉';
+  let startAction = 'startSession()';
+  let startDisabled = false;
+  if(nothingDueOrNew){
+    if(canExtraReview){
+      startLabel = `🔁 Повторить слова в изучении (${activeWords.length})`;
+      startAction = 'startActiveReview()';
+    } else {
+      startLabel = 'Все слова повторены 🎉';
+      startDisabled = true;
+    }
   }
 
   holder.innerHTML = `
@@ -932,10 +953,14 @@ function renderToday(){
       </div>
       <div class="sub">${STATE.sessionDoneToday} / ${STATE.dailyGoal} выполнено сегодня</div>
       <div style="margin-top:16px;">
-        <button class="btn" onclick="startSession()" ${(due.length+newAvail)===0?'disabled':''}>
+        <button class="btn" onclick="${startAction}" ${startDisabled?'disabled':''}>
           ${startLabel}
         </button>
       </div>
+      ${isCapped ? `
+      <div class="sub" style="margin-top:10px; text-align:center;">
+        📦 Лимит «в изучении» заполнен (${WIP_LIMIT}) — новые слова откроются, когда часть текущих будет усвоена. ${canExtraReview? 'А пока можно закреплять уже начатые слова кнопкой выше.' : ''}
+      </div>` : ''}
       <div class="toggle-row" style="border-top:none; padding-top:2px; margin-top:14px;">
         <div>
           <div class="label">📦 В изучении сейчас</div>
@@ -966,6 +991,12 @@ function renderToday(){
         </label>
       </div>
     </div>
+    ${activeWords.length > 0 ? `
+    <div class="card">
+      <h2>💪 Дополнительная практика</h2>
+      <div class="sub">${activeWords.length} слов сейчас в изучении (ещё не усвоены). Можно потренировать их прямо сейчас, не дожидаясь запланированного повторения по SRS — это не собьёт основной план и не потратит дневную цель.</div>
+      <button class="btn secondary" style="margin-top:12px;" onclick="startActiveReview()">Повторить слова в изучении (${activeWords.length})</button>
+    </div>` : ''}
     ${mastered.length > 0 ? `
     <div class="card">
       <h2>🔁 Повторить усвоенные</h2>
@@ -1001,6 +1032,18 @@ function startMasteredReview(){
   const mastered = WORDS.filter(w=>STATE.progress[w.w].status==="mastered");
   if(mastered.length === 0){ toast("Пока нет усвоенных слов"); return; }
   const pool = [...mastered].sort(()=>Math.random()-0.5);
+  SESSION = { queue: pool, idx:0, correctCount:0, mode:null, revealed:false, feedback:null, isReview:true };
+  render();
+}
+
+/* Extra reinforcement round for words already "in progress" (learning/review) —
+   ignores their SRS due date on purpose, so the person is never stuck waiting
+   even when the WIP limit blocks new words. Answers still update the SRS record
+   as normal reps, so good performance here still helps the word graduate sooner. */
+function startActiveReview(){
+  const active = getActiveWords();
+  if(active.length === 0){ toast("Пока нет слов в изучении"); return; }
+  const pool = [...active].sort(()=>Math.random()-0.5);
   SESSION = { queue: pool, idx:0, correctCount:0, mode:null, revealed:false, feedback:null, isReview:true };
   render();
 }
